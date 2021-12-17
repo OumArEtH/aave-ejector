@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: agpl-3.0
 pragma solidity 0.8.4;
 
-import {IFlashLoanReceiver, ILendingPoolAddressesProvider, ILendingPool, IPriceOracle, IERC20  } from "./Interfaces.sol";
+import { IFlashLoanReceiver, ILendingPoolAddressesProvider, ILendingPool, IPriceOracle, IERC20 } from "./Interfaces.sol";
 import { SafeMath, SafeERC20, DataTypes } from "./Libraries.sol";
 
 contract AaveEjector is IFlashLoanReceiver {
