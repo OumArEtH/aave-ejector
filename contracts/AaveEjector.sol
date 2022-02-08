@@ -1,46 +1,52 @@
 // SPDX-License-Identifier: agpl-3.0
 pragma solidity 0.8.4;
 
-import { IFlashLoanReceiver, ILendingPoolAddressesProvider, ILendingPool, IPriceOracle, IERC20 } from "./Interfaces.sol";
+import { 
+    IFlashLoanReceiver, 
+    ILendingPoolAddressesProvider, 
+    ILendingPool, 
+    IPriceOracle, 
+    IERC20, 
+    IProtocolDataProvider,
+    IStableDebtToken,
+    IAToken,
+    IAssetSwapper
+} from "./Interfaces.sol";
+
 import { SafeMath, SafeERC20, DataTypes } from "./Libraries.sol";
 
 contract AaveEjector is IFlashLoanReceiver {
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
     
-    struct UserLendingData {
-        address[] collateralAssets;
-        uint256[] collatoralAssetsPrices;
-    }
-    
-    // Tokens
-    address internal constant DAI_TOKEN = address(0xFf795577d9AC8bD7D90Ee22b6C1703490b6512FD);
-    address internal constant YFI_TOKEN = address(0xb7c325266ec274fEb1354021D27FA3E3379D840d);
-    address internal constant LINK_TOKEN = address(0xAD5ce863aE3E4E9394Ab43d4ba0D80f419F61789);
-    address internal constant USDC_TOKEN = address(0xe22da380ee6B445bb8273C81944ADEB6E8450422);
+    address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+
+    address internal constant AAVE_LENDING_POOL_ADDRESSESS_PROVIDER = 0xB53C1a33016B2DC2fF3653530bfF1848a515c8c5;
+    address internal constant PROTOCOL_DATA_PROVIDER = 0x057835Ad21a177dbdd3090bB1CAE03EaCF78Fc6d;
+    address internal constant SWAP_ROUTER = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
     
     // Lending parameters
-    uint16 internal constant INTEREST_RATE_MODE = 1;
-    uint16 internal constant FLASH_LOAN_DEBT_MODE = 0;
-    uint16 internal constant REFERRAL_CODE = 0;
+    uint16 internal constant INTEREST_RATE_MODE_STABLE = 1;
+    uint16 internal constant FLASH_LOAN_DEBT_MODE_NO_DEBT = 0;
+    uint16 internal constant NO_REFERRAL_CODE = 0;
     
     ILendingPoolAddressesProvider public addressesProvider;
     ILendingPool public lendingPool;
     IPriceOracle public priceOracle;
+    IProtocolDataProvider public dataProvider;
     
-    address public onBehalfOf;
     address public owner;
-    
-    event Log(string name, uint256 value);
-    event FLAssets(string name, address asset, uint256 value);
+    address public assetSwapper;
 
     error Unauthorized();
     
-    constructor() {
+    constructor(address _assetSwapper) {
         owner = msg.sender;
-        addressesProvider = ILendingPoolAddressesProvider(address(0x88757f2f99175387aB4C6a4b3067c77A695b0349));
+        addressesProvider = ILendingPoolAddressesProvider(AAVE_LENDING_POOL_ADDRESSESS_PROVIDER);
         lendingPool = ILendingPool(addressesProvider.getLendingPool());
         priceOracle = IPriceOracle(addressesProvider.getPriceOracle());
+        dataProvider = IProtocolDataProvider(PROTOCOL_DATA_PROVIDER);
+        assetSwapper = _assetSwapper;
     }
     
     modifier onlyOwner() {
@@ -68,33 +74,35 @@ contract AaveEjector is IFlashLoanReceiver {
         // This contract now has the funds requested.
         // Your logic goes here.
         //
+        address onBehalfOf = abi.decode(params, (address));
+
         for (uint i = 0; i < assets.length; i++) {
-            repayDebt(assets[i], amounts[i]);
+            repayDebtOnBehalfOf(onBehalfOf, assets[i], amounts[i]);
         }
         
-        uint256 _totalCollateralETH = _getTotalCollateralETHValue(onBehalfOf);
-        
-        emit Log("Total Collacteral ETH", _totalCollateralETH);
+        address[] memory collaterals = _getCollaterals(onBehalfOf);        
 
-        UserLendingData memory userLendingData;
-        
-        userLendingData.collateralAssets = _getCollaterals(onBehalfOf);
-        userLendingData.collatoralAssetsPrices = new uint256[](userLendingData.collateralAssets.length);
-
-        for (uint i = 0; i < userLendingData.collateralAssets.length; i++) {
-            address collacteralAsset = address(userLendingData.collateralAssets[i]);
+        for (uint i = 0; i < collaterals.length; i++) {
+            address collacteralAsset = collaterals[i];
             
-            userLendingData.collatoralAssetsPrices[i] = priceOracle.getAssetPrice(collacteralAsset);
-
             // Withdraw collateral from lending pool
-            _withdraw(collacteralAsset, type(uint).max);
+            withdrawOnBehalfOf(onBehalfOf, collacteralAsset, type(uint).max);
             
             // swap collateral to ETH
+            uint256 balance = IERC20(collacteralAsset).balanceOf(address(this));
+            IERC20(collacteralAsset).approve(assetSwapper, balance);
+
+            IAssetSwapper(assetSwapper).swapExactInput(collacteralAsset, balance, WETH, 0);
         }
-        
+
+        // swap WETH to assets to repay back the flash loan
         for (uint i = 0; i < assets.length; i++) {
-            uint amountToTransfer = amounts[i].add(premiums[i]);
-            emit FLAssets("Amount to transfer", assets[i], amountToTransfer);
+            uint256 maxBalance = IERC20(WETH).balanceOf(address(this));
+            uint amountOwing = amounts[i].add(premiums[i]);
+            address asset = assets[i];
+
+            IERC20(WETH).approve(assetSwapper, maxBalance);
+            IAssetSwapper(assetSwapper).swapExactOutput(WETH, maxBalance, asset, amountOwing);
         }
         
 
@@ -111,119 +119,83 @@ contract AaveEjector is IFlashLoanReceiver {
 
         return true;
     }
-    
-    function setupDeposit() public {
-        deposit(LINK_TOKEN, IERC20(LINK_TOKEN).balanceOf(address(this)));
-        deposit(YFI_TOKEN, IERC20(YFI_TOKEN).balanceOf(address(this)));
-    }
-    
-    function setupBorrow() public {
-        borrow(DAI_TOKEN, 1000000000000000000000);
-        borrow(USDC_TOKEN, 1000000000);
-    }
-    
-    function withdrawDebt() public {
-        IERC20(DAI_TOKEN).transferFrom(address(this), msg.sender, IERC20(DAI_TOKEN).balanceOf(address(this)));
-        IERC20(USDC_TOKEN).transferFrom(address(this), msg.sender, IERC20(USDC_TOKEN).balanceOf(address(this)));
-    }
-    
-    function approveSpending(uint256 _amount) public {
-        require(IERC20(USDC_TOKEN).approve(address(this), _amount));
-        require(IERC20(DAI_TOKEN).approve(address(this), _amount));
-    }
-    
-    function allowance(address _asset, address spender) public view returns(uint256) {
-        return IERC20(_asset).allowance(msg.sender, spender);
-    }
-    
-    function testTransfer(address _asset, uint256 _amount) public {
-        require(IERC20(_asset)
-            .transferFrom(address(0x6F2ded3Cbf4E63Ff3636E3f946E0924E4c79B474), address(this), _amount));
-    }
-    
-    function closePosition() public {
-        address[] memory assets = new address[](2);
-        assets[0] = DAI_TOKEN;
-        assets[1] = USDC_TOKEN;
 
-        uint256[] memory amounts = new uint256[](2);
-        amounts[0] = 1100000000000000000000;
-        amounts[1] = 1100000000;
-
-        // 0 = no debt, 1 = stable, 2 = variable
-        uint256[] memory modes = new uint256[](2);
-        modes[0] = FLASH_LOAN_DEBT_MODE;
-        modes[1] = FLASH_LOAN_DEBT_MODE;
-        
-        _takeLoan(assets, amounts, modes);
-    }
-
-    function _takeLoan(address[] memory assets, uint256[] memory amounts, uint256[] memory modes) public {
+    function takeLoanAndSelfLiquidate(address user) public {
         address receiverAddress = address(this);
-        bytes memory params = "";
-        uint16 referralCode = 0;
+        bytes memory params = abi.encode(user);
+
+        address[] memory borrowedAssets = _getBorrowedAssets(user);
+        uint256[] memory borrowedBalances = new uint256[](borrowedAssets.length);
+        // 0 = no debt, 1 = stable, 2 = variable
+        uint256[] memory modes = new uint256[](borrowedAssets.length);
+
+        for(uint i = 0; i < borrowedAssets.length; i++) {
+            borrowedBalances[i] = _getBorrowedAssetBalance(borrowedAssets[i], user);
+            borrowedBalances[i] += borrowedBalances[i].div(1000);
+            modes[i] = FLASH_LOAN_DEBT_MODE_NO_DEBT;
+        }
 
         lendingPool.flashLoan(
             receiverAddress,
-            assets,
-            amounts,
+            borrowedAssets,
+            borrowedBalances,
             modes,
-            onBehalfOf,
+            receiverAddress,
             params,
-            referralCode
+            NO_REFERRAL_CODE
         );
     }
     
-    function deposit(address _asset, uint256 _amount) public {
-        require(IERC20(_asset).approve(address(lendingPool), _amount), "Deposit - Lending provider approval failed");
+    function depositOnBehalfOf(address onBehalfOf, address asset, uint256 amount) public {
+        require(IERC20(asset).approve(address(lendingPool), amount), "Deposit - Lending provider approval failed");
         
-        lendingPool.deposit(_asset, _amount, onBehalfOf, REFERRAL_CODE);
+        lendingPool.deposit(asset, amount, onBehalfOf, NO_REFERRAL_CODE);
     }
     
-    function borrow(address _asset, uint256 _amount) public {
-        lendingPool.borrow(_asset, _amount, INTEREST_RATE_MODE, REFERRAL_CODE, onBehalfOf);
+    function borrowOnBehalfOf(address onBehalfOf, address asset, uint256 amount) public {
+        lendingPool.borrow(asset, amount, INTEREST_RATE_MODE_STABLE, NO_REFERRAL_CODE, onBehalfOf);
     }
-    
-    function getUserConfiguration(address _user) public view returns(uint256) {
-        DataTypes.UserConfigurationMap memory userConfig = lendingPool.getUserConfiguration(_user);
-        return userConfig.data;
-    }
-    
-    function getReservesList() public view returns(address[] memory) {
-        return lendingPool.getReservesList();
-    }
-    
-    function changeOnBehalfOf(address newOnBehalfOf) public onlyOwner {
-        onBehalfOf = newOnBehalfOf;
-    }
-    
-    function _getTotalCollateralETHValue(address _user) internal view returns(uint256) {
-        (uint256 _totalCollateralETH, 
-        uint256 _a, 
-        uint256 _b, 
-        uint256 _c, 
-        uint256 _d, 
-        uint256 _e) = lendingPool.getUserAccountData(_user);
+
+    function repayDebtOnBehalfOf(address onBehalfOf, address asset, uint256 amount) public {
+        require(IERC20(asset).approve(address(lendingPool), amount), "Repay - Lending provider approval failed");
         
-        return _totalCollateralETH;
+        lendingPool.repay(asset, amount, INTEREST_RATE_MODE_STABLE, onBehalfOf);
     }
+
+    function withdrawOnBehalfOf(address onBehalfOf, address asset, uint256 amount) public {
+        (address aToken,,) = dataProvider.getReserveTokensAddresses(asset);
+        uint256 balance = IAToken(aToken).balanceOf(onBehalfOf);
+        require(IAToken(aToken).transferFrom(onBehalfOf, address(this), balance), "Unable to transfer aToken");
+
+        lendingPool.withdraw(asset, amount, address(this));
+    }
+
+    function withdrawFundsToUser(address asset, uint256 amount) public {
+        require(IERC20(asset).balanceOf(address(this)) >= amount, "Not enough balance to withdraw from");
+        IERC20(asset).transfer(msg.sender, amount);
+    }
+
+    /**
+        Aave help functions
+     */
     
-    function _getCollaterals(address _user) internal view returns(address[] memory) {
+    function _getCollaterals(address user) internal view returns (address[] memory) {
         address[] memory reserveList = lendingPool.getReservesList();
         uint256 collateralsSize;
         uint256 collateralsArrayIndex;
         
         for(uint i = 0; i < reserveList.length; i++) {
-            if(_isUsingAsCollateral(_user, i)) {
+            if(_isUsingAsCollateral(user, i)) {
                 collateralsSize++;
             }
         }
         
+        // need number of collateral assets to initialize result size
         address[] memory collaterals = new address[](collateralsSize);
         
         // Unfortunately I had to use two loops to have an array with the exact required size
         for(uint i = 0; i < reserveList.length; i++) {
-            if(_isUsingAsCollateral(_user, i)) {
+            if(_isUsingAsCollateral(user, i)) {
                 collaterals[collateralsArrayIndex] = reserveList[i];
                 collateralsArrayIndex++;
             }
@@ -231,22 +203,52 @@ contract AaveEjector is IFlashLoanReceiver {
         
         return collaterals;
     }
+
+    function _getBorrowedAssets(address user) internal view returns (address[] memory) {
+        address[] memory reserveList = lendingPool.getReservesList();
+        uint256 borrowedAssetsSize;
+        uint256 index;
+        
+        for(uint i = 0; i < reserveList.length; i++) {
+            if(_isBorrowing(user, i)) {
+                borrowedAssetsSize++;
+            }
+        }
+        
+        // need number of borrowed assets to initialize result size
+        address[] memory debtAssets = new address[](borrowedAssetsSize);
+        
+        // Unfortunately I had to use two loops to have an array with the exact required size
+        for(uint i = 0; i < reserveList.length; i++) {
+            if(_isBorrowing(user, i)) {
+                debtAssets[index] = reserveList[i];
+                index++;
+            }
+        }
+        
+        return debtAssets;
+    }
+
+    function _getBorrowedAssetBalance(address asset, address user) internal view returns (uint256) {
+        (, address stableDebtToken, address variableDebtToken) = dataProvider.getReserveTokensAddresses(asset);
+        uint256 compoundedBalance = IERC20(stableDebtToken).balanceOf(user);
+        compoundedBalance = compoundedBalance.add(IERC20(variableDebtToken).balanceOf(user));
+
+        return compoundedBalance;
+    }
     
-    function _isUsingAsCollateral(address _user, uint256 reserveIndex) internal view returns (bool) {
+    function _isUsingAsCollateral(address user, uint256 reserveIndex) internal view returns (bool) {
         require(reserveIndex < 128, "Invalid index");
         
-        DataTypes.UserConfigurationMap memory userConfig = lendingPool.getUserConfiguration(_user);
+        DataTypes.UserConfigurationMap memory userConfig = lendingPool.getUserConfiguration(user);
         return (userConfig.data >> (reserveIndex * 2 + 1)) & 1 != 0;
     }
-    
-    function repayDebt(address _asset, uint256 _amount) public {
-        require(IERC20(_asset).approve(address(lendingPool), _amount), "Repay - Lending provider approval failed");
-        
-        lendingPool.repay(_asset, _amount, INTEREST_RATE_MODE, onBehalfOf);
-    }
-    
-    function _withdraw(address _asset, uint256 _amount) internal {
-        lendingPool.withdraw(_asset, _amount, onBehalfOf);
+
+    function _isBorrowing(address user, uint256 reserveIndex) internal view returns (bool) {
+        require(reserveIndex < 128, "Invalid index");
+        DataTypes.UserConfigurationMap memory userConfig = lendingPool.getUserConfiguration(user);
+
+        return (userConfig.data >> (reserveIndex * 2)) & 1 != 0;
     }
     
     receive() payable external {}
