@@ -18,12 +18,13 @@ import { SafeMath, SafeERC20, DataTypes } from "./Libraries.sol";
 contract AaveEjector is IFlashLoanReceiver {
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
-    
-    address internal constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
-    address internal constant AAVE_LENDING_POOL_ADDRESSESS_PROVIDER = 0xB53C1a33016B2DC2fF3653530bfF1848a515c8c5;
-    address internal constant PROTOCOL_DATA_PROVIDER = 0x057835Ad21a177dbdd3090bB1CAE03EaCF78Fc6d;
-    address internal constant SWAP_ROUTER = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
+    struct EjectorInputParams {
+        address weth;
+        address protocolDataProvider;
+        address lendingPoolAddressesProvider;
+        address assetSwapper;
+    }
     
     // Lending parameters
     uint16 internal constant INTEREST_RATE_MODE_STABLE = 1;
@@ -37,16 +38,18 @@ contract AaveEjector is IFlashLoanReceiver {
     
     address public owner;
     address public assetSwapper;
+    address public weth;
 
     error Unauthorized();
     
-    constructor(address _assetSwapper) {
+    constructor(EjectorInputParams memory inputParams) {
         owner = msg.sender;
-        addressesProvider = ILendingPoolAddressesProvider(AAVE_LENDING_POOL_ADDRESSESS_PROVIDER);
+        addressesProvider = ILendingPoolAddressesProvider(inputParams.lendingPoolAddressesProvider);
         lendingPool = ILendingPool(addressesProvider.getLendingPool());
         priceOracle = IPriceOracle(addressesProvider.getPriceOracle());
-        dataProvider = IProtocolDataProvider(PROTOCOL_DATA_PROVIDER);
-        assetSwapper = _assetSwapper;
+        dataProvider = IProtocolDataProvider(inputParams.protocolDataProvider);
+        assetSwapper = inputParams.assetSwapper;
+        weth = inputParams.weth;
     }
     
     modifier onlyOwner() {
@@ -101,11 +104,11 @@ contract AaveEjector is IFlashLoanReceiver {
             uint256 minWETHOutput = totalAssetValue.mul(95).div(100);
             
             // swap to WETH
-            IAssetSwapper(assetSwapper).swapExactInput(collacteralAsset, balance, WETH, minWETHOutput);
+            IAssetSwapper(assetSwapper).swapExactInput(collacteralAsset, balance, weth, minWETHOutput);
         }
 
-        uint256 wethBalance = IERC20(WETH).balanceOf(address(this));
-        IERC20(WETH).approve(assetSwapper, wethBalance);
+        uint256 wethBalance = IERC20(weth).balanceOf(address(this));
+        IERC20(weth).approve(assetSwapper, wethBalance);
 
         // swap WETH to assets to repay back the flash loan
         for (uint i = 0; i < assets.length; i++) {
@@ -123,13 +126,13 @@ contract AaveEjector is IFlashLoanReceiver {
             maxInValue = maxInValue.add(maxInValue.mul(5).div(100));
 
             // swap back to 'asset' to pay back loan
-            IAssetSwapper(assetSwapper).swapExactOutput(WETH, maxInValue, asset, amountOwing);
+            IAssetSwapper(assetSwapper).swapExactOutput(weth, maxInValue, asset, amountOwing);
         }
 
         return true;
     }
 
-    function takeLoanAndSelfLiquidate(address user) public {
+    function takeLoanAndSelfLiquidate(address user) external {
         address receiverAddress = address(this);
         bytes memory params = abi.encode(user);
 
@@ -179,7 +182,7 @@ contract AaveEjector is IFlashLoanReceiver {
         lendingPool.withdraw(asset, amount, address(this));
     }
 
-    function withdrawFundsToUser(address asset, uint256 amount) public {
+    function withdrawFundsToUser(address asset, uint256 amount) external {
         require(IERC20(asset).balanceOf(address(this)) >= amount, "Not enough balance to withdraw from");
         IERC20(asset).transfer(msg.sender, amount);
     }

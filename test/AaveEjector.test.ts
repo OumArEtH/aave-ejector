@@ -1,6 +1,6 @@
 import { expect } from 'chai'
 import { ethers, network } from 'hardhat'
-import { BigNumber, Contract, Signer } from 'ethers'
+import { Contract, Signer } from 'ethers'
 import {
   wethContract,
   daiContract,
@@ -14,7 +14,9 @@ import {
   ADDRESS_YFI,
   ADDRESS_LINK,
   ADDRESS_WETH,
+  ADDRESS_PROTOCOL_DATA_PROVIDER,
   ADDRESS_LENDING_POOL,
+  AAVE_LENDING_POOL_ADDRESSESS_PROVIDER,
   lendingPoolContract,
   dataProviderContract,
   stableDebtDAIContract,
@@ -40,7 +42,13 @@ describe("AaveEjector", () => {
 
     // deploy AaveEjector
     const AaveEjector = await ethers.getContractFactory("AaveEjector")
-    aaveEjector = await AaveEjector.deploy(assetSwapper.address)
+    const ejectjorInputParams = {
+      weth: ADDRESS_WETH,
+      protocolDataProvider: ADDRESS_PROTOCOL_DATA_PROVIDER,
+      lendingPoolAddressesProvider: AAVE_LENDING_POOL_ADDRESSESS_PROVIDER,
+      assetSwapper: assetSwapper.address,
+    }
+    aaveEjector = await AaveEjector.deploy(ejectjorInputParams)
     aaveEjector.deployed()
 
     // impersonate an account to be used for testing
@@ -54,7 +62,7 @@ describe("AaveEjector", () => {
 
   describe("Deployment", () => {
     it("Should successfully deploy contract", async () => {
-      expect(await aaveEjector.addressesProvider()).to.equal("0xB53C1a33016B2DC2fF3653530bfF1848a515c8c5")
+      expect(await aaveEjector.addressesProvider()).to.equal(AAVE_LENDING_POOL_ADDRESSESS_PROVIDER)
       expect(await aaveEjector.lendingPool()).to.equal(ADDRESS_LENDING_POOL)
       expect(await aaveEjector.priceOracle()).to.equal("0xA50ba011c48153De246E5192C8f9258A2ba79Ca9")
     })

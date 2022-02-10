@@ -8,7 +8,8 @@ export const ADDRESS_DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 export const ADDRESS_YFI = "0x0bc529c00c6401aef6d220be8c6ea1667f6ad93e"
 export const ADDRESS_LINK = "0x514910771af9ca656af840dff83e8264ecf986ca"
 export const ADDRESS_LENDING_POOL = "0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9"
-export const ADDRESS_DATA_PROVIDER = "0x057835Ad21a177dbdd3090bB1CAE03EaCF78Fc6d"
+export const ADDRESS_PROTOCOL_DATA_PROVIDER = "0x057835Ad21a177dbdd3090bB1CAE03EaCF78Fc6d"
+export const AAVE_LENDING_POOL_ADDRESSESS_PROVIDER = "0xB53C1a33016B2DC2fF3653530bfF1848a515c8c5"
 
 export const wethContract = (): Contract => {
     return getContract(ADDRESS_WETH, 'contracts/artifacts/WrappedEther.json')
@@ -43,7 +44,7 @@ export const lendingPoolContract = (): Contract => {
 }
 
 export const dataProviderContract = (): Contract => {
-    return getContract(ADDRESS_DATA_PROVIDER, 'contracts/artifacts/ProtocolDataProvider.json')
+    return getContract(ADDRESS_PROTOCOL_DATA_PROVIDER, 'contracts/artifacts/ProtocolDataProvider.json')
 }
 
 export const stableDebtDAIContract = (stableDebtDAI: string): Contract => {
