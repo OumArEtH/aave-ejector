@@ -1,6 +1,6 @@
 import { expect } from 'chai'
 import { ethers, network } from 'hardhat'
-import { Contract, Signer } from 'ethers'
+import { BigNumber, Contract, Signer } from 'ethers'
 import {
   wethContract,
   daiContract,
@@ -72,64 +72,24 @@ describe("AaveEjector", () => {
     let stableDebtUsdc: Contract
     let stableDebtDai: Contract
 
-    beforeEach(async function () {
-      this.timeout(200000)
-      userAddress = await user.getAddress()
-      aLink = aLINKContract(await getATokenAddress(user, ADDRESS_LINK))
-      aYfi = aYFIContract(await getATokenAddress(user, ADDRESS_YFI))
-      stableDebtUsdc = stableDebtUSDCContract(await getStableTokenAddress(user, ADDRESS_USDC))
-      stableDebtDai = stableDebtDAIContract(await getStableTokenAddress(user, ADDRESS_DAI))
+    describe("Close positions", () => {
+      it("Should successfully liquidate and close user positions", async () => {
+        userAddress = await user.getAddress()
+        aLink = aLINKContract(await getATokenAddress(user, ADDRESS_LINK))
+        aYfi = aYFIContract(await getATokenAddress(user, ADDRESS_YFI))
+        stableDebtUsdc = stableDebtUSDCContract(await getStableTokenAddress(user, ADDRESS_USDC))
+        stableDebtDai = stableDebtDAIContract(await getStableTokenAddress(user, ADDRESS_DAI))
 
-      // prepare some test tokens
-      // First deposit some ETH to get WETH
-      await weth.connect(user).deposit({ value: ethers.utils.parseEther("20") })
+        // prepare contract with tokens
+        await prepareContract(user, assetSwapper, aaveEjector, link, yfi, weth)
 
-      // approve assetSwapper to spend WETH
-      await weth.connect(user).approve(assetSwapper.address, ethers.utils.parseEther("20"))
-
-      // get some link
-      await assetSwapper.connect(user).swapExactOutput(
-        ADDRESS_WETH,
-        ethers.utils.parseEther("10"),
-        ADDRESS_LINK,
-        ethers.utils.parseUnits("1000"))
-
-      // get some YFI
-      await assetSwapper.connect(user).swapExactOutput(
-        ADDRESS_WETH,
-        ethers.utils.parseEther("10"),
-        ADDRESS_YFI,
-        ethers.utils.parseUnits("1"))
-
-      // check LINK and YFI user balance after swap
-      const userLINKBalance = await link.connect(user).balanceOf(userAddress)
-      expect(userLINKBalance).to.equal(ethers.utils.parseUnits("1000"))
-
-      const userYFIBalance = await yfi.connect(user).balanceOf(userAddress)
-      expect(userYFIBalance).to.equal(ethers.utils.parseUnits("1"))
-
-      // transfer some LINK to contract
-      await link.connect(user).transfer(aaveEjector.address, ethers.utils.parseUnits("1000"))
-
-      // transfer some YFI to contract
-      await yfi.connect(user).transfer(aaveEjector.address, ethers.utils.parseUnits("1"))
-
-      // check LINK and YFI balances
-      const contractLINKBalance = await link.connect(user).balanceOf(aaveEjector.address)
-      const contractYFIBalance = await yfi.connect(user).balanceOf(aaveEjector.address)
-      expect(contractLINKBalance).to.equal(ethers.utils.parseUnits("1000"))
-      expect(contractYFIBalance).to.equal(ethers.utils.parseUnits("1"))
-
-      // check initial contract WETH balance
-      const wethBalance = await weth.connect(user).balanceOf(aaveEjector.address)
-      expect(wethBalance).to.equal(ethers.utils.parseUnits("0"))
-    })
-
-    describe("Deposit", () => {
-      it("Should successfully deposit funds into lending pool", async () => {
         // nothing to borrow before deposit
         let availableBorrowsETH = await getAvailableBorrowsETH(user, userAddress)
         expect(availableBorrowsETH).to.equal(0)
+
+        // check total collateral
+        let totalCollateralETH = await getTotalCollateralETH(user, userAddress)
+        expect(totalCollateralETH).to.equal(0)
 
         // deposit tokens into AAVE lendingpool
         await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_LINK, ethers.utils.parseUnits("1000"))
@@ -141,18 +101,13 @@ describe("AaveEjector", () => {
         expect(aLINKBalance).to.gte(ethers.utils.parseUnits("1000"))
         expect(aYFIBalance).to.gte(ethers.utils.parseUnits("1"))
 
+        // check total collateral
+        totalCollateralETH = await getTotalCollateralETH(user, userAddress)
+        expect(totalCollateralETH).to.gt(0)
+
         // can borrow
         availableBorrowsETH = await getAvailableBorrowsETH(user, userAddress)
         expect(availableBorrowsETH).to.gt(0)
-      })
-    }).timeout(200000)
-
-    /*
-    describe("Borrow", () => {
-      it("Should successfully borrow funds", async () => {
-        // deposit tokens into AAVE lendingpool
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_LINK, ethers.utils.parseUnits("1000"))
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_YFI, ethers.utils.parseUnits("1"))
 
         // start borrowing
         let totalDebtETH = await getTotalDebtETH(user, userAddress)
@@ -176,135 +131,47 @@ describe("AaveEjector", () => {
         expect(userStableDebtUSDCBalance).to.gte(ethers.utils.parseUnits("10000", 6))
 
         // check token balances in contract
-        const constractDAIBalance = await dai.connect(user).balanceOf(aaveEjector.address)
-        const contractUSDCBalance = await usdc.connect(user).balanceOf(aaveEjector.address)
-        expect(constractDAIBalance).to.equal(ethers.utils.parseUnits("9000"))
+        let contractDAIBalance = await dai.connect(user).balanceOf(aaveEjector.address)
+        let contractUSDCBalance = await usdc.connect(user).balanceOf(aaveEjector.address)
+        expect(contractDAIBalance).to.equal(ethers.utils.parseUnits("9000"))
         expect(contractUSDCBalance).to.equal(ethers.utils.parseUnits("10000", 6))
-      })
 
-      it("can't borrow funds without depositing into lending pool", async () => {
-        // start borrowing
-        let totalDebtETH = await getTotalDebtETH(user, userAddress)
-        expect(totalDebtETH).to.equal(0)
-
-        // give allowance to the contract to borrow on behalf of the user
-        await stableDebtDai.connect(user).approveDelegation(aaveEjector.address, ethers.utils.parseUnits("9000"))
-        await stableDebtUsdc.connect(user).approveDelegation(aaveEjector.address, ethers.utils.parseUnits("10000", 6))
-
-        // borrow USDC and DAI
-        await expect(aaveEjector
-          .connect(user)
-          .borrowOnBehalfOf(userAddress, ADDRESS_DAI, ethers.utils.parseUnits("9000"))
-        ).to.be.revertedWith('')
-        await expect(aaveEjector
-          .connect(user)
-          .borrowOnBehalfOf(userAddress, ADDRESS_USDC, ethers.utils.parseUnits("10000", 6))
-        ).to.be.revertedWith('')
-      })
-
-      it("can't borrow funds without approving delegation to contract to borrow on behalf of caller", async () => {
-        // deposit tokens into AAVE lendingpool
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_LINK, ethers.utils.parseUnits("1000"))
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_YFI, ethers.utils.parseUnits("1"))
-
-        // borrow USDC and DAI
-        await expect(aaveEjector
-          .connect(user)
-          .borrowOnBehalfOf(userAddress, ADDRESS_DAI, ethers.utils.parseUnits("9000"))
-        ).to.be.revertedWith('')
-        await expect(aaveEjector
-          .connect(user)
-          .borrowOnBehalfOf(userAddress, ADDRESS_USDC, ethers.utils.parseUnits("10000", 6))
-        ).to.be.revertedWith('')
-      })
-    })
-
-    
-    describe("Repay debt", () => {
-      it("Should successfully repay debt", async () => {
-        // deposit tokens into AAVE lendingpool
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_LINK, ethers.utils.parseUnits("1000"))
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_YFI, ethers.utils.parseUnits("1"))
-
-        // give allowance to the contract to borrow on behalf of the user
-        await stableDebtDai.connect(user).approveDelegation(aaveEjector.address, ethers.utils.parseUnits("9000"))
-        await stableDebtUsdc.connect(user).approveDelegation(aaveEjector.address, ethers.utils.parseUnits("10000", 6))
-
-        // borrow USDC and DAI
-        await aaveEjector.connect(user).borrowOnBehalfOf(userAddress, ADDRESS_DAI, ethers.utils.parseUnits("9000"))
-        await aaveEjector.connect(user).borrowOnBehalfOf(userAddress, ADDRESS_USDC, ethers.utils.parseUnits("10000", 6))
-
-        let totalDebtETH = await getTotalDebtETH(user, userAddress)
-        expect(totalDebtETH).to.gt(0)
-
-        // repay debt
-        await aaveEjector.connect(user).repayDebt(ADDRESS_DAI, ethers.utils.parseUnits("9010"))
-        await aaveEjector.connect(user).repayDebt(ADDRESS_USDC, ethers.utils.parseUnits("10010", 6))
-
-        // no debt after repayment
-        totalDebtETH = await getTotalDebtETH(user, userAddress)
-        expect(totalDebtETH).to.equal(0)
-
-      })
-    })
-
-    
-    describe("Withdraw", () => {
-      it("Should successfully withdraw funds from lending pool", async () => {
-        // deposit tokens into AAVE lendingpool
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_LINK, ethers.utils.parseUnits("1000"))
-        await aaveEjector.connect(user).depositOnBehalfOf(userAddress, ADDRESS_YFI, ethers.utils.parseUnits("1"))
-
-        // give allowance to the contract to borrow on behalf of the user
-        await stableDebtDai.connect(user).approveDelegation(aaveEjector.address, ethers.utils.parseUnits("9000"))
-        await stableDebtUsdc.connect(user).approveDelegation(aaveEjector.address, ethers.utils.parseUnits("10000", 6))
-
-        // borrow USDC and DAI
-        await aaveEjector.connect(user).borrowOnBehalfOf(userAddress, ADDRESS_DAI, ethers.utils.parseUnits("9000"))
-        await aaveEjector.connect(user).borrowOnBehalfOf(userAddress, ADDRESS_USDC, ethers.utils.parseUnits("10000", 6))
-
-        // repay debt
-        await aaveEjector.connect(user).repayDebt(ADDRESS_DAI, ethers.utils.parseUnits("9010"))
-        await aaveEjector.connect(user).repayDebt(ADDRESS_USDC, ethers.utils.parseUnits("10010", 6))
-
-        // approve the contract to pull aTokens
-        await aLink.connect(user).approve(aaveEjector.address, ethers.constants.MaxUint256)
-        await aYfi.connect(user).approve(aaveEjector.address, ethers.constants.MaxUint256)
-
-        // withdraw funds
-        await aaveEjector.connect(user).withdrawOnBehalfOf(userAddress, ADDRESS_YFI, ethers.constants.MaxUint256)
-        await aaveEjector.connect(user).withdrawOnBehalfOf(userAddress, ADDRESS_LINK, ethers.constants.MaxUint256)
-
-        const LINKBalance = await link.connect(user).balanceOf(aaveEjector.address)
-        const YFIBalance = await yfi.connect(user).balanceOf(aaveEjector.address)
-        expect(LINKBalance).to.gt(ethers.utils.parseUnits("0"))
-        expect(YFIBalance).to.gt(ethers.utils.parseUnits("0"))
-      })
-
-      it("Only user who has deposited funds should be able to withdraw funds from lending pool", async () => {
-
-      })
-
-      it("Should successfully withdraw funds from contract to user address", async () => {
-        // withdraw funds
         await aaveEjector.connect(user).withdrawFundsToUser(ADDRESS_DAI, ethers.utils.parseUnits("9000"))
         await aaveEjector.connect(user).withdrawFundsToUser(ADDRESS_USDC, ethers.utils.parseUnits("10000", 6))
 
-        const contractDAIBalance = await dai.connect(user).balanceOf(aaveEjector.address)
-        const contractUSDCBalance = await usdc.connect(user).balanceOf(aaveEjector.address)
+        contractDAIBalance = await dai.connect(user).balanceOf(aaveEjector.address)
+        contractUSDCBalance = await usdc.connect(user).balanceOf(aaveEjector.address)
         expect(contractDAIBalance).to.equal(0)
         expect(contractUSDCBalance).to.equal(0)
-  })
-    
 
-    
-  describe("Self liquidate", () => {
-    // close position, leaving some WETH in contract
-    await aaveEjector.connect(user).takeLoanAndSelfLiquidate(userAddress)
+        // approve the contract to pull aTokens. Otherwise withdrawal of collateral won't work
+        await aLink.connect(user).approve(aaveEjector.address, ethers.constants.MaxUint256)
+        await aYfi.connect(user).approve(aaveEjector.address, ethers.constants.MaxUint256)
 
-    wethBalance = await weth.connect(user).balanceOf(aaveEjector.address)
-    console.log("Remaining WETH Balance: ", ethers.utils.formatEther(wethBalance))
-  })*/
+        let wethBalance = await weth.connect(user).balanceOf(aaveEjector.address)
+        expect(wethBalance).to.equal(0)
+
+        // Gas estimation
+        /*const gas: BigNumber = await aaveEjector.connect(user).estimateGas.takeLoanAndSelfLiquidate(userAddress)
+        const gasPrice = await ethers.getDefaultProvider().getGasPrice()
+        const gasCost = gas.mul(gasPrice)
+        console.log("Gas estimation: ", gas.toString())
+        console.log("Gas price: ", ethers.utils.formatUnits(gasPrice, "gwei"))
+        console.log("Gas cost: ", ethers.utils.formatEther(gasCost))*/
+
+        // close position, leaving some WETH in contract
+        await aaveEjector.connect(user).takeLoanAndSelfLiquidate(userAddress)
+
+        wethBalance = await weth.connect(user).balanceOf(aaveEjector.address)
+        expect(wethBalance).to.gt(0)
+      }).timeout(500000)
+
+      it("Can't call 'executeOperation' flash loan function directly", async () => {
+        const initiator = '0xcA8Fa8f0b631EcdB18Cda619C4Fc9d197c8aFfCa'
+        await expect(aaveEjector.executeOperation(['0xcA8Fa8f0b631EcdB18Cda619C4Fc9d197c8aFfCa'], ["1"], ["0"], initiator, [0]))
+          .to.be.revertedWith('Not callable directly')
+      })
+    })
   })
 })
 
@@ -365,4 +232,59 @@ const getATokenAddress = async (signer: Signer, asset: string) => {
   } = await dataProviderContract().connect(signer).getReserveTokensAddresses(ethers.utils.getAddress(asset))
 
   return aTokenAddress
+}
+
+const prepareContract = async function (
+  user: Signer,
+  assetSwapper: Contract,
+  aaveEjector: Contract,
+  link: Contract,
+  yfi: Contract,
+  weth: Contract
+) {
+  const userAddress = await user.getAddress()
+
+  // prepare some test tokens
+  // First deposit some ETH to get WETH
+  await weth.connect(user).deposit({ value: ethers.utils.parseEther("20") })
+
+  // approve assetSwapper to spend WETH
+  await weth.connect(user).approve(assetSwapper.address, ethers.utils.parseEther("20"))
+
+  // get some link
+  await assetSwapper.connect(user).swapExactOutput(
+    ADDRESS_WETH,
+    ethers.utils.parseEther("10"),
+    ADDRESS_LINK,
+    ethers.utils.parseUnits("1000"))
+
+  // get some YFI
+  await assetSwapper.connect(user).swapExactOutput(
+    ADDRESS_WETH,
+    ethers.utils.parseEther("10"),
+    ADDRESS_YFI,
+    ethers.utils.parseUnits("1"))
+
+  // check LINK and YFI user balance after swap
+  const userLINKBalance = await link.connect(user).balanceOf(userAddress)
+  expect(userLINKBalance).to.equal(ethers.utils.parseUnits("1000"))
+
+  const userYFIBalance = await yfi.connect(user).balanceOf(userAddress)
+  expect(userYFIBalance).to.equal(ethers.utils.parseUnits("1"))
+
+  // transfer some LINK to contract
+  await link.connect(user).transfer(aaveEjector.address, ethers.utils.parseUnits("1000"))
+
+  // transfer some YFI to contract
+  await yfi.connect(user).transfer(aaveEjector.address, ethers.utils.parseUnits("1"))
+
+  // check LINK and YFI balances
+  const contractLINKBalance = await link.connect(user).balanceOf(aaveEjector.address)
+  const contractYFIBalance = await yfi.connect(user).balanceOf(aaveEjector.address)
+  expect(contractLINKBalance).to.equal(ethers.utils.parseUnits("1000"))
+  expect(contractYFIBalance).to.equal(ethers.utils.parseUnits("1"))
+
+  // check initial contract WETH balance
+  const wethBalance = await weth.connect(user).balanceOf(aaveEjector.address)
+  expect(wethBalance).to.equal(ethers.utils.parseUnits("0"))
 }

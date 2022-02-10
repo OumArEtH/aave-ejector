@@ -74,6 +74,8 @@ contract AaveEjector is IFlashLoanReceiver {
         // This contract now has the funds requested.
         // Your logic goes here.
         //
+        require(msg.sender == address(lendingPool), "Not callable directly");
+
         address onBehalfOf = abi.decode(params, (address));
 
         for (uint i = 0; i < assets.length; i++) {
@@ -92,29 +94,36 @@ contract AaveEjector is IFlashLoanReceiver {
             uint256 balance = IERC20(collacteralAsset).balanceOf(address(this));
             IERC20(collacteralAsset).approve(assetSwapper, balance);
 
-            IAssetSwapper(assetSwapper).swapExactInput(collacteralAsset, balance, WETH, 0);
+            uint256 assetPrice = priceOracle.getAssetPrice(collacteralAsset);
+            uint256 totalAssetValue = balance.div(10 ** IERC20(collacteralAsset).decimals()).mul(assetPrice);
+
+            // 5% slippage
+            uint256 minWETHOutput = totalAssetValue.mul(95).div(100);
+            
+            // swap to WETH
+            IAssetSwapper(assetSwapper).swapExactInput(collacteralAsset, balance, WETH, minWETHOutput);
         }
+
+        uint256 wethBalance = IERC20(WETH).balanceOf(address(this));
+        IERC20(WETH).approve(assetSwapper, wethBalance);
 
         // swap WETH to assets to repay back the flash loan
         for (uint i = 0; i < assets.length; i++) {
-            uint256 maxBalance = IERC20(WETH).balanceOf(address(this));
+            // contract owes the flashloaned amounts + premiums
             uint amountOwing = amounts[i].add(premiums[i]);
-            address asset = assets[i];
 
-            IERC20(WETH).approve(assetSwapper, maxBalance);
-            IAssetSwapper(assetSwapper).swapExactOutput(WETH, maxBalance, asset, amountOwing);
-        }
-        
-
-        // At the end of your logic above, this contract owes
-        // the flashloaned amounts + premiums.
-        // Therefore ensure your contract has enough to repay
-        // these amounts.
-
-        // Approve the LendingPool contract allowance to *pull* the owed amount
-        for (uint i = 0; i < assets.length; i++) {
-            uint amountOwing = amounts[i].add(premiums[i]);
+            // Approve the LendingPool contract allowance to *pull* the owed amount
             IERC20(assets[i]).approve(address(lendingPool), amountOwing);
+
+            address asset = assets[i];
+            uint256 assetPrice = priceOracle.getAssetPrice(asset);
+            uint256 maxInValue = amountOwing.div(10 ** IERC20(asset).decimals()).mul(assetPrice);
+
+            // 5% slippage
+            maxInValue = maxInValue.add(maxInValue.mul(5).div(100));
+
+            // swap back to 'asset' to pay back loan
+            IAssetSwapper(assetSwapper).swapExactOutput(WETH, maxInValue, asset, amountOwing);
         }
 
         return true;
@@ -131,7 +140,7 @@ contract AaveEjector is IFlashLoanReceiver {
 
         for(uint i = 0; i < borrowedAssets.length; i++) {
             borrowedBalances[i] = _getBorrowedAssetBalance(borrowedAssets[i], user);
-            borrowedBalances[i] += borrowedBalances[i].div(1000);
+            borrowedBalances[i] = borrowedBalances[i].add(borrowedBalances[i].div(1000));
             modes[i] = FLASH_LOAN_DEBT_MODE_NO_DEBT;
         }
 
